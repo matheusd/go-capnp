@@ -182,11 +182,14 @@ func (ans *ansReturner) AllocResults(sz capnp.ObjectSize) (capnp.Struct, error) 
 // reference.
 func (ans *ansReturner) setBootstrap(c capnp.Client) error {
 	if ans.ret.HasResults() || ans.ret.Message().CapTable().Len() > 0 {
+		// FIXME don't panic, return an error instead
 		panic("setBootstrap called after creating results")
 	}
 	// Add the capability to the table early to avoid leaks if setBootstrap fails.
 	ans.ret.Message().CapTable().Reset(c)
 
+	// Allocate the result and set it as the first index in the cap table,
+	// thus fulfilling the contract for a Bootrap() call.
 	var err error
 	ans.results, err = ans.ret.NewResults()
 	if err != nil {

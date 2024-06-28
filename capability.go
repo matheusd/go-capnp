@@ -3,6 +3,7 @@ package capnp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"strconv"
 	"sync"
@@ -341,7 +342,7 @@ func (c Client) SendCall(ctx context.Context, s Send) (*Answer, ReleaseFunc) {
 		return ErrorAnswer(s.Method, errors.New("call on released client")), func() {}
 	}
 	if h == nil {
-		return ErrorAnswer(s.Method, errors.New("call on null client")), func() {}
+		return ErrorAnswer(s.Method, errors.New("call on null client booo")), func() {}
 	}
 
 	err := mutex.With1(&c.state, func(c *clientState) error {
@@ -373,6 +374,7 @@ func (c Client) SendCall(ctx context.Context, s Send) (*Answer, ReleaseFunc) {
 	}
 
 	ans, rel := h.Value().Send(ctx, s)
+	fmt.Println("sent", s.Method.MethodName)
 	// FIXME: an earlier version of this code called StartMessage() from
 	// within PlaceArgs -- but that can result in a deadlock, since it means
 	// the client hook is holding a lock while we're waiting on the limiter.
@@ -474,7 +476,7 @@ func (c Client) RecvCall(ctx context.Context, r Recv) PipelineCaller {
 		return nil
 	}
 	if h == nil {
-		r.Reject(errors.New("call on null client"))
+		r.Reject(errors.New("call on null client recvCall"))
 		return nil
 	}
 	return h.Value().Recv(ctx, r)
@@ -622,7 +624,7 @@ func (cs ClientSnapshot) IsResolved() bool {
 // Send implements ClientHook.Send
 func (cs ClientSnapshot) Send(ctx context.Context, s Send) (*Answer, ReleaseFunc) {
 	if cs.hook == nil {
-		return ErrorAnswer(s.Method, errors.New("call on null client")), func() {}
+		return ErrorAnswer(s.Method, errors.New("call on null client send()")), func() {}
 	}
 	return cs.hook.Value().Send(ctx, s)
 }
@@ -630,7 +632,7 @@ func (cs ClientSnapshot) Send(ctx context.Context, s Send) (*Answer, ReleaseFunc
 // Recv implements ClientHook.Recv
 func (cs ClientSnapshot) Recv(ctx context.Context, r Recv) PipelineCaller {
 	if cs.hook == nil {
-		r.Reject(errors.New("call on null client"))
+		r.Reject(errors.New("call on null client recv()"))
 		return nil
 	}
 	return cs.hook.Value().Recv(ctx, r)

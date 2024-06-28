@@ -3,6 +3,7 @@ package capnp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"capnproto.org/go/capnp/v3/exc"
@@ -366,6 +367,8 @@ func (ans *Answer) PipelineRecv(ctx context.Context, transform []PipelineOp, r R
 	case l.Value().isResolved():
 		res := l.Value().resolution(p.method)
 		l.Unlock()
+		fmt.Println("XXX pipelineRcv gonna call RecvCall")
+		// debug.PrintStack()
 		return res.client(transform).RecvCall(ctx, r)
 	default:
 		panic("unreachable")

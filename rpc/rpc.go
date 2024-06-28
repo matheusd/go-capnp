@@ -562,6 +562,8 @@ func (c *Conn) receive(ctx context.Context) func() error {
 		incoming := make(chan incomingMessage)
 		go c.reader(ctx, incoming)
 
+		var finCount int
+
 		var in transport.IncomingMessage
 		for {
 			select {
@@ -575,6 +577,9 @@ func (c *Conn) receive(ctx context.Context) func() error {
 			case <-ctx.Done():
 				return nil
 			}
+
+			fmt.Printf("XXX withRemotePeer %v received %s\n", c.remotePeerID,
+				in.Message().Which())
 
 			switch in.Message().Which() {
 			case rpccp.Message_Which_unimplemented:
@@ -604,6 +609,12 @@ func (c *Conn) receive(ctx context.Context) func() error {
 			case rpccp.Message_Which_finish:
 				if err := c.handleFinish(ctx, in); err != nil {
 					return fmt.Errorf("handle Finish: %w", err)
+				}
+
+				if finCount == 0 {
+					// time.Sleep(4000 * time.Millisecond)
+					fmt.Printf("%v slept after first finish()\n", c.remotePeerID)
+					finCount++
 				}
 
 			case rpccp.Message_Which_release:
@@ -736,11 +747,17 @@ func (c *Conn) handleBootstrap(in transport.IncomingMessage) error {
 			ans.sendException(dq, exc.New(exc.Failed, "", "vat does not expose a public/bootstrap interface"))
 			return
 		}
+
+		// Fill the result with a reference to this Conn's bootstrap
+		// capability. That capability may be a concrete cap or a
+		// promise to (eventually) get the cap.
 		if err := ans.returner.setBootstrap(c.bootstrap.AddRef()); err != nil {
 			ans.sendException(dq, err)
 			return
 		}
 		err = ans.sendReturn(dq)
+		fmt.Printf("XXX withRemotePeer %v sentReturn %d\n", c.remotePeerID,
+			ans.returner.id)
 		if err != nil {
 			// Answer cannot possibly encounter a Finish, since we still
 			// haven't returned to receive().
@@ -764,8 +781,13 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 
 	id := answerID(call.QuestionId())
 
+	fmt.Printf("XXX withRemotePeer %v handling call %d\n", c.remotePeerID,
+		id)
+
 	// TODO(3rd-party handshake): support sending results to 3rd party vat
 	if call.SendResultsTo().Which() != rpccp.Call_sendResultsTo_Which_caller {
+		fmt.Println("XXX which != whichCaller")
+
 		// TODO(someday): handle SendResultsTo.yourself
 		c.er.ReportError(errors.New("incoming call: results destination is not caller"))
 
@@ -806,13 +828,17 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 
 		parseErr = c.parseCall(dq, &p, call) // parseCall sets CapTable
 	})
-	if err != nil {
+	if err != nil { // This is fucking ugly
+		fmt.Println("XXX fucking err", err)
 		return err
 	}
+
+	fmt.Println("XXX parsed call", p.target.which)
 
 	// Create return message.
 	ret, send, retReleaser, err := c.newReturn()
 	if err != nil {
+		fmt.Println("XXX return msg errored", err)
 		err = rpcerr.Annotate(err, "incoming call")
 		syncutil.With(&c.lk, func() {
 			c.lk.answers[id] = errorAnswer(c, id, err)
@@ -837,6 +863,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 	return withLockedConn1(c, func(c *lockedConn) error {
 		c.lk.answers[id] = ans
 		if parseErr != nil {
+			fmt.Println("XXX fucking parse err", parseErr)
 			parseErr = rpcerr.Annotate(parseErr, "incoming call")
 			ans.sendException(dq, parseErr)
 			dq.Defer(func() {
@@ -871,8 +898,10 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 			callCtx, ans.cancel = context.WithCancel(c.bgctx)
 			pcall := newPromisedPipelineCaller()
 			ans.setPipelineCaller(p.method, pcall)
+			// fmt.Println("XXX ans table has ans", spew.Sdump(ans))
 			dq.Defer(func() {
-				pcall.resolve(ent.snapshot.Recv(callCtx, recv))
+				res := ent.snapshot.Recv(callCtx, recv)
+				pcall.resolve(res)
 			})
 			return nil
 		case rpccp.MessageTarget_Which_promisedAnswer:
@@ -1101,6 +1130,10 @@ func (c *Conn) handleReturn(ctx context.Context, in transport.IncomingMessage) e
 	return withLockedConn1(c, func(c *lockedConn) error {
 
 		qid := questionID(ret.AnswerId())
+
+		fmt.Printf("XXX withRemotePeer %v handleReturn %d\n", c.remotePeerID,
+			qid)
+
 		if uint32(qid) >= uint32(len(c.lk.questions)) {
 			dq.Defer(in.Release)
 			return rpcerr.Failed(errors.New(
@@ -1149,6 +1182,9 @@ func (c *Conn) handleReturn(ctx context.Context, in transport.IncomingMessage) e
 		if pr.parseFailed {
 			c.er.ReportError(rpcerr.Annotate(pr.err, "incoming return"))
 		}
+
+		fmt.Printf("XXX withRemotePeer %v handleReturn %d parsed return err %v\n", c.remotePeerID,
+			qid, pr.err)
 
 		if pr.err == nil {
 			// The result of the message contains actual data (not just

@@ -9,6 +9,9 @@ type localPromise struct {
 
 // NewLocalPromise returns a client that will eventually resolve to a capability,
 // supplied via the resolver.
+//
+// bad name. this is a "promise with a local resolver", not (necessarily) a
+// "promise created locally".
 func NewLocalPromise[C ~ClientKind]() (C, Resolver[C]) {
 	aq := NewAnswerQueue(Method{})
 	f := NewPromise(Method{}, aq, aq)
