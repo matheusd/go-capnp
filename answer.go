@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"capnproto.org/go/capnp/v3/exc"
 	"capnproto.org/go/capnp/v3/internal/str"
@@ -368,6 +369,8 @@ func (ans *Answer) PipelineRecv(ctx context.Context, transform []PipelineOp, r R
 		res := l.Value().resolution(p.method)
 		l.Unlock()
 		fmt.Println("XXX pipelineRcv gonna call RecvCall")
+		time.Sleep(time.Second)
+		fmt.Println("XXX continuing with recvCall")
 		// debug.PrintStack()
 		return res.client(transform).RecvCall(ctx, r)
 	default:

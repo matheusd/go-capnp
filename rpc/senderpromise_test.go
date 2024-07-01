@@ -410,6 +410,9 @@ func TestDisembargoSenderPromise(t *testing.T) {
 func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 	t.Parallel()
 
+	const concreteBootstrapInterfaceID uint64 = 0xbaba001337
+	const methodIdOrd uint16 = 0x0f30
+
 	ctx := context.Background()
 	p, r := capnp.NewLocalPromise[capnp.Client]()
 
@@ -452,11 +455,58 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		theirBootstrapID = desc.SenderPromise
 	}
 
+	fmt.Println("p2 received bootstrap")
+	time.Sleep(time.Second)
+	fmt.Println("gonna send call")
+
+	// P2 makes a pipelined call on that returned promise. This will get
+	// embargoed in P1. Note this is a call on the bootstrap interface, thus
+	// must be supported by level 0 implementations.
+	p2Call01Id := uint32(0xaabbccdd)
+	{
+		msg := &rpcMessage{
+			Which: rpccp.Message_Which_call,
+			Call: &rpcCall{
+				QuestionID: p2Call01Id,
+				Target: rpcMessageTarget{
+					Which: rpccp.MessageTarget_Which_promisedAnswer,
+					PromisedAnswer: &rpcPromisedAnswer{
+						// ???
+						//
+						// Doc says "ID of the
+						// question (in the sender's
+						// question table / receiver's
+						// answer table)"
+						//
+						// But I think this is backwards.
+						QuestionID: theirBootstrapID,
+					},
+				},
+				InterfaceID: concreteBootstrapInterfaceID,
+				MethodID:    methodIdOrd,
+				SendResultsTo: rpcCallSendResultsTo{
+					Which: rpccp.Call_sendResultsTo_Which_caller,
+				},
+			},
+		}
+		assert.NoError(t, sendMessage(ctx, p2, msg))
+	}
+
+	// The previous call is now pending in P1. It's waiting for P1's own
+	// bootstrap interface promise (i.e. `p`) to be resolved before it
+	// can continue.
+
+	fmt.Println("sent call")
+	time.Sleep(time.Second)
+	fmt.Println("gonna ask for P2 bootstrap")
+
 	// For conveience, we use the other peer's (i.e. P2's) bootstrap
 	// interface as the thing to resolve to.
 	//
 	// bsClient is a promise (in P1) that will resolve to P2's bootstrap
 	// interface.
+	//
+	// conn.Bootstrap() asks for P2's bootstrap interface.
 	bsClient := conn.Bootstrap(ctx)
 	defer bsClient.Release()
 
@@ -498,7 +548,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 
 	// P1 accepts P2's return and resolves the bootstrap interface. It
 	// sends a Finish to flag that it has no more pipelined calls into the
-	// original Bootstrap() call and P2 may release resources.
+	// prior conn.Bootstrap() call and P2 may release resources.
 	assert.NoError(t, bsClient.Resolve(ctx))
 
 	// P2 receives finish.
@@ -510,9 +560,53 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		assert.Equal(t, incomingBSQid, rmsg.Finish.QuestionID)
 	}
 
+	time.Sleep(time.Second)
+	fmt.Println("gonna fulfill")
+	// time.Sleep(time.Second)
+
+	//stacktrace := make([]byte, 8192)
+	//length := runtime.Stack(stacktrace, true)
+	//fmt.Println(string(stacktrace[:length]))
+
+	time.Sleep(time.Second)
+
 	// Resolve P1's bootstrap capability as P2's bootstrap capability.
 	// Semantically, this means P1 proxies calls to P2.
+	//
+	// At this point in time, bsClient is already resolved.
 	r.Fulfill(bsClient)
+
+	fmt.Println("fulfilled")
+	time.Sleep(time.Second)
+	fmt.Println("gonna wait for reply")
+
+	// At this point in time, P1 has a fulfilled promise on its bootstrap
+	// interface. This was the dependency needed to answer P2's initial
+	// query for P1's bootstrap interface.
+	//
+	// P1 also has a pipelined call (sent by P2) into that promise (that
+	// effectively should be proxied by P1 back to P2). The question
+	// becomes: what comes first? The pipelined call or the resolve?
+	//
+	// Due to the nature of this test (and the use of NewLocalPromise), the
+	// prior `r.Fulfill()` directly triggers the pending pipelined call
+	// _before_ the resolve has a chance to be sent, so that's what we
+	// assert next.
+	var p1ToP2CallQuestionId uint32
+	{
+		// P1 sends the pipelined call back to P2.
+		rmsg, release, err := recvMessage(ctx, p2)
+		assert.NoError(t, err)
+		defer release()
+		assert.Equal(t, rpccp.Message_Which_call, rmsg.Which)
+		// FIXME: what else to assert?
+		assert.Equal(t, methodIdOrd, rmsg.Call.MethodID)
+		assert.Equal(t, concreteBootstrapInterfaceID, rmsg.Call.InterfaceID)
+		p1ToP2CallQuestionId = rmsg.Call.QuestionID
+
+		fmt.Println("Got call")
+
+	}
 
 	// r.Fulfill() causes all references to P1's bootstrap capability (which
 	// was initialized as the `p` promise) to be completed. This triggers
@@ -532,6 +626,35 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		// bootstrap capability (a concrete exported capability, at
 		// `myBootstrapID`).
 		assert.Equal(t, myBootstrapID, desc.ReceiverHosted)
+	}
+	fmt.Println("Got resolve")
+
+	// Send reply to the P1->P2 call. We do this here instead of immediately
+	// after receiving the call in order to process the resolve message first
+	// and ensure the finish P2 will receive for this comes later.
+	{
+		// P2 sends the reply.
+		assert.NoError(t, sendMessage(ctx, p2, &rpcMessage{
+			Which: rpccp.Message_Which_return,
+			Return: &rpcReturn{
+				AnswerID: p1ToP2CallQuestionId,
+				Which:    rpccp.Return_Which_results,
+				Results: &rpcPayload{
+					Content: capnp.Ptr{}, // Returning void.
+				},
+			},
+		}))
+
+		fmt.Println("P2 Sent reply to call")
+
+		// P2 Receives the finish.
+		rmsg, release, err := recvMessage(ctx, p2)
+		assert.NoError(t, err)
+		defer release()
+		assert.Equal(t, rpccp.Message_Which_finish, rmsg.Which)
+
+		fmt.Println("P2 received finish")
+		time.Sleep(3 * time.Second)
 	}
 
 	// The prior message resolved P1's bootstrap interface (promise `p`,
@@ -567,8 +690,19 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		}))
 	}
 
+	fmt.Println("sent disembargo")
+
 	// P1 sends any previously-embargoed and now disembargoed pipelined
-	// calls. This test has none.
+	// calls. This test has one embargoed call that can now be returned
+	// to P1 (this is the original P2->P1 pipelined call).
+	{
+		rmsg, release, err := recvMessage(ctx, p2)
+		assert.NoError(t, err)
+		defer release()
+		assert.Equal(t, rpccp.Message_Which_return, rmsg.Which)
+		assert.Equal(t, rmsg.Return.AnswerID, p2Call01Id)
+		// FIXME: Anything else to assert?
+	}
 
 	// P1 echoes back the disembargo to P2 to let it know it has finished
 	// processing pipelined calls.
@@ -591,6 +725,109 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		// now knows this and is replying that info back.
 		assert.Equal(t, myBootstrapID, tgt.ImportedCap)
 	}
+
+	fmt.Println("received disembargo")
+}
+
+// TestShortensPathAfterResolve verifies that a conn collapses the path to a
+// capability if the remote promise resolves to the local vat.
+func TestShortensPathAfterResolve(t *testing.T) {
+	t.Parallel()
+
+	t.Cleanup(func() { time.Sleep(100 * time.Millisecond) }) // Avoid log error after fail
+
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Second*30)
+	defer cancel()
+
+	// Promise that will be the bootstrap capability in C1 and will be
+	// eventually resolved as the bootstrap capability in C2.
+	p, r := capnp.NewLocalPromise[testcapnp.PingPong]()
+	defer p.Release()
+
+	left, right := transport.NewPipe(1)
+	p1, p2 := rpc.NewTransport(left), rpc.NewTransport(right)
+
+	// C1 will be proxying calls to C2 (the bootstrap capability is the
+	// promise).
+	c1 := rpc.NewConn(p1, &rpc.Options{
+		Logger:          testErrorReporter{tb: t},
+		BootstrapClient: capnp.Client(p),
+		RemotePeerID:    rpc.PeerID{Value: "c1"}, // (really, c2)
+		AbortTimeout:    15 * time.Second,
+	})
+
+	// C2 is the "echo server".
+	ord := &echoNumOrderChecker{t: t}
+	c2 := rpc.NewConn(p2, &rpc.Options{
+		Logger:          testErrorReporter{tb: t},
+		BootstrapClient: capnp.Client(testcapnp.PingPong_ServerToClient(ord)),
+		RemotePeerID:    rpc.PeerID{Value: "c2"}, // (really, c1)
+		AbortTimeout:    15 * time.Second,
+	})
+
+	// Request C1's bootstrap interface. This returns a promise that will
+	// take a while to resolve, because in C1 this is _also_ a promise back
+	// to C2 (in C1 this is `p`, which will be resolved by `r.Fulfill`).
+	time.Sleep(time.Second)
+	fmt.Println("gonna create c2PromiseToC1")
+	c2PromiseToC1 := testcapnp.PingPong(c2.Bootstrap(ctx))
+	defer c2PromiseToC1.Release()
+
+	time.Sleep(1000 * time.Millisecond)
+	fmt.Println("created second promise")
+
+	// Fetch C2's bootstrap interface (the concrete echo server).
+	c1PromiseToC2 := testcapnp.PingPong(c1.Bootstrap(ctx))
+	defer c1PromiseToC2.Release()
+	require.NoError(t, c1PromiseToC2.Resolve(ctx))
+
+	time.Sleep(1000 * time.Millisecond)
+	fmt.Println("resolved c1PromiseToC2")
+
+	// Perform a call in C1 using C2's bootstrap interface (which is
+	// already resolved).
+	const c1CallValue int64 = 0xc1000042
+	c1Call, c1CallRel := echoNum(ctx, c1PromiseToC2, c1CallValue)
+	defer c1CallRel()
+	c1CallRes, err := c1Call.Struct()
+	require.NoError(t, err)
+	require.Equal(t, c1CallValue, c1CallRes.N())
+	fmt.Println("Got reply")
+	time.Sleep(1000 * time.Millisecond)
+
+	go func() {
+		fmt.Println("gonna resolve c2PromiseToC1")
+		require.NoError(t, c2PromiseToC1.Resolve(ctx))
+		fmt.Println("Resolved second promise")
+	}()
+	time.Sleep(time.Second)
+
+	// Fulfill C1's bootstrap capability with C2's bootstrap capability
+	// (i.e. echo server). This resolves the prior c2PromiseToC1 above and
+	// shortens the path, because C1's bootstrap resolves to C2's bootstrap.
+	fmt.Println("LLL gonna fulfill")
+	r.Fulfill(c1PromiseToC2)
+	fmt.Println("fulfilled")
+	time.Sleep(1000 * time.Millisecond)
+
+	// fmt.Println("gonna resolve c2PromiseToC1")
+	// require.NoError(t, c2PromiseToC1.Resolve(ctx))
+	// fmt.Println("Resolved second promise")
+
+	// Shut down the connections. This ensures that we've successfully
+	// shortened the path to cut out the remote peer in the next assertion.
+	require.NoError(t, c1.Close())
+	require.NoError(t, c2.Close())
+
+	// Perform the call using what was originally a C2->C1 promise, but
+	// that should have gotten shortened to a local call.
+	const c2CallValue int64 = 0xc2000042
+	c2Call, c2CallRel := echoNum(ctx, c2PromiseToC1, c2CallValue)
+	defer c2CallRel()
+	c2CallRes, err := c2Call.Struct()
+	require.NoError(t, err)
+	require.Equal(t, c2CallValue, c2CallRes.N())
 }
 
 // Tests that E-order is respected when fulfilling a promise with something on
@@ -650,7 +887,7 @@ func TestPromiseOrdering(t *testing.T) {
 		futures []testcapnp.PingPong_echoNum_Results_Future
 		rels    []capnp.ReleaseFunc
 	)
-	numCalls := 0
+	numCalls := 16
 	for i := 0; i < numCalls; i++ {
 		fut, rel := echoNum(ctx, remotePromise, int64(i))
 		futures = append(futures, fut)

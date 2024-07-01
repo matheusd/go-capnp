@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/exc"
@@ -107,7 +108,7 @@ func (c *lockedConn) sendCap(d rpccp.CapDescriptor, snapshot capnp.ClientSnapsho
 	}
 
 	defer snapshot.Release()
-	bv := snapshot.Brand().Value
+	bv := snapshot.Brand().Value // tsk tsk tsk.. [:shakeshead:]
 	if ic, ok := bv.(*importClient); ok {
 		if ic.c == (*Conn)(c) {
 			if ent := c.lk.imports[ic.id]; ent != nil && ent.generation == ic.generation {
@@ -120,6 +121,9 @@ func (c *lockedConn) sendCap(d rpccp.CapDescriptor, snapshot capnp.ClientSnapsho
 		}
 	}
 
+	// ???
+	//
+	// This block is meant to enable reuse of an answer (I think).
 	if pc, ok := bv.(capnp.PipelineClient); ok {
 		if q, ok := c.getAnswerQuestion(pc.Answer()); ok {
 			if q.c == (*Conn)(c) {
@@ -167,8 +171,11 @@ func (c *lockedConn) sendCap(d rpccp.CapDescriptor, snapshot capnp.ClientSnapsho
 			c.lk.exports[id] = ee
 		}
 		c.setExportID(metadata, id)
+		fmt.Println("XXX added new export with id", id)
 	}
 	if ee.snapshot.IsPromise() {
+		// Cap is a promise. Let the receiver know and start a new
+		// goroutine to wait for the promise to be resolved.
 		c.sendSenderPromise(id, d)
 	} else {
 		d.SetSenderHosted(uint32(id))
@@ -185,15 +192,18 @@ func (c *lockedConn) sendSenderPromise(id exportID, d rpccp.CapDescriptor) {
 	ctx, cancel := context.WithCancel(c.bgctx)
 	ee.cancel = cancel
 	waitRef := ee.snapshot.AddRef()
+
 	go func() {
 		defer cancel()
 		defer waitRef.Release()
 		// Logically we don't hold the lock anymore; it's held by the
 		// goroutine that spawned this one. So cast back to an unlocked
 		// Conn before trying to use it again:
-		unlockedConn := (*Conn)(c)
+		unlockedConn := (*Conn)(c) // ugh...
 
+		// XXX bootstrap is waiting here to send the resolve.
 		waitErr := waitRef.Resolve1(ctx)
+		fmt.Println("XXX exported promise fullfilled", id)
 		unlockedConn.withLocked(func(c *lockedConn) {
 			if len(c.lk.exports) <= int(id) || c.lk.exports[id] != ee {
 				// Export was removed from the table at some point;

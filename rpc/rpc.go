@@ -130,6 +130,10 @@ type Conn struct {
 		imports    map[importID]*impent
 		embargoes  []*embargo
 		embargoID  idgen[embargoID]
+
+		// FIXME: this is ugly. Used as a workaround to a Bootstrap
+		// race bug.
+		bootstrapQuestions []*question
 	}
 }
 
@@ -320,12 +324,27 @@ func (c *Conn) Bootstrap(ctx context.Context) (bc capnp.Client) {
 		}
 		defer c.tasks.Done()
 
+		// Should multiple calls to Bootstrap yield different
+		// promises/clients? Or the same one?
 		q := c.newQuestion(capnp.Method{})
 		bc = q.p.Answer().Client().AddRef()
-		go func() {
-			q.p.ReleaseClients()
-			q.release()
-		}()
+
+		// FIXME: This works around an issue with path shortening on
+		// the bootstrap interface. The q question should be released
+		// after bc is released, but there's no way to tie the two, so
+		// resort to a very ugly hack of storing the bootstrap question
+		// until the conn is shutdown.
+		c.lk.bootstrapQuestions = append(c.lk.bootstrapQuestions, q)
+		/*
+			go func() {
+				// I have seen the enemy, and it is debugged.
+				fmt.Printf("XXX withRemotePeer %v gonna release clients\n", c.remotePeerID)
+				q.p.ReleaseClients()
+				fmt.Printf("XXX withRemotePeer %v released bootstrap.p clients\n", c.remotePeerID)
+				q.release()
+				fmt.Printf("XXX withRemotePeer %v released bootstrap.q\n", c.remotePeerID)
+			}()
+		*/
 
 		c.sendMessage(ctx, func(m rpccp.Message) error {
 			boot, err := m.NewBootstrap()
@@ -424,6 +443,14 @@ func (c *lockedConn) cancelTasks() {
 		if a != nil && a.cancel != nil {
 			a.cancel()
 		}
+	}
+
+	for _, bq := range c.lk.bootstrapQuestions {
+		bq := bq
+		go func() {
+			bq.p.ReleaseClients()
+			bq.release()
+		}()
 	}
 }
 
@@ -755,6 +782,10 @@ func (c *Conn) handleBootstrap(in transport.IncomingMessage) error {
 			ans.sendException(dq, err)
 			return
 		}
+
+		// If the bootstrap interface is a promise, this will
+		// (eventually) start a new goroutine to wait for the promise to
+		// be fulfilled.
 		err = ans.sendReturn(dq)
 		fmt.Printf("XXX withRemotePeer %v sentReturn %d\n", c.remotePeerID,
 			ans.returner.id)
@@ -781,8 +812,8 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 
 	id := answerID(call.QuestionId())
 
-	fmt.Printf("XXX withRemotePeer %v handling call %d\n", c.remotePeerID,
-		id)
+	fmt.Printf("XXX withRemotePeer %v handling call %d (%x)\n", c.remotePeerID,
+		id, id)
 
 	// TODO(3rd-party handshake): support sending results to 3rd party vat
 	if call.SendResultsTo().Which() != rpccp.Call_sendResultsTo_Which_caller {
@@ -861,6 +892,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 		sendMsg: send,
 	}
 	return withLockedConn1(c, func(c *lockedConn) error {
+		// Track this call in the answers table.
 		c.lk.answers[id] = ans
 		if parseErr != nil {
 			fmt.Println("XXX fucking parse err", parseErr)
@@ -882,6 +914,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 
 		switch p.target.which {
 		case rpccp.MessageTarget_Which_importedCap:
+			// Target of the call is an exported capability.
 			ent := c.findExport(p.target.importedCap)
 			if ent == nil {
 				ans.returner.ret = rpccp.Return{}
@@ -905,6 +938,8 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 			})
 			return nil
 		case rpccp.MessageTarget_Which_promisedAnswer:
+			// Target of the call is a promise (this is a pipelined
+			// call).
 			tgtAns := c.lk.answers[p.target.promisedAnswer]
 			if tgtAns == nil || tgtAns.flags.Contains(finishReceived) {
 				ans.returner.ret = rpccp.Return{}
@@ -921,6 +956,8 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 				))
 			}
 			if tgtAns.flags.Contains(resultsReady) {
+				// Already completed the promise.
+				fmt.Println("XXX results are ready")
 				if tgtAns.err != nil {
 					ans.sendException(dq, tgtAns.err)
 					dq.Defer(in.Release)
@@ -930,6 +967,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 				// received finish yet (it would have been deleted from the
 				// answers table), and it can't receive a finish because this is
 				// happening on the receive goroutine.
+				// <---- possible place of the bug.
 				content, err := tgtAns.returner.results.Content()
 				if err != nil {
 					err = rpcerr.WrapFailed("incoming call: read results from target answer", err)
@@ -947,6 +985,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 				}
 				iface := sub.Interface()
 				var tgt capnp.ClientSnapshot
+				fmt.Println("XXX sub.IsValid", sub.IsValid(), "iface.IsValid()", iface.IsValid())
 				if sub.IsValid() && !iface.IsValid() {
 					tgt = capnp.ErrorClient(rpcerr.Failed(ErrNotACapability)).Snapshot()
 				} else {
@@ -954,6 +993,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 					capTable := tgtAns.returner.resultsCapTable
 					if int(capID) < len(capTable) {
 						tgt = capTable[capID].AddRef()
+						fmt.Println("XXX adding ref to cap table id", capID, tgt)
 					}
 				}
 
@@ -968,6 +1008,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 				})
 			} else {
 				// Results not ready, use pipeline caller.
+				fmt.Println("XXX results are NOT ready")
 				tgtAns.pcalls.Add(1) // will be finished by answer.Return
 				var callCtx context.Context
 				callCtx, ans.cancel = context.WithCancel(c.bgctx)
@@ -1833,6 +1874,7 @@ func (c *Conn) handleResolve(ctx context.Context, in transport.IncomingMessage) 
 
 	promiseID := importID(resolve.PromiseId())
 	err = withLockedConn1(c, func(c *lockedConn) error {
+		// Find the resolved promise.
 		imp, ok := c.lk.imports[promiseID]
 		if !ok {
 			return errors.New(
@@ -1846,6 +1888,10 @@ func (c *Conn) handleResolve(ctx context.Context, in transport.IncomingMessage) 
 					"is not a promise",
 			)
 		}
+
+		fmt.Printf("XXX withRemotePeer %v resolving %d with %s\n", c.remotePeerID,
+			promiseID, resolve.Which())
+
 		switch resolve.Which() {
 		case rpccp.Resolve_Which_cap:
 			desc, err := resolve.Cap()
@@ -1859,6 +1905,9 @@ func (c *Conn) handleResolve(ctx context.Context, in transport.IncomingMessage) 
 			if c.isLocalClient(client) {
 				var id embargoID
 				id, client = c.embargo(client)
+				fmt.Printf("XXX withRemotePeer %v resolved "+
+					"local client embargoed with id %d\n",
+					c.remotePeerID, id)
 				disembargo := senderLoopback{
 					id: id,
 					target: parsedMessageTarget{
@@ -1877,10 +1926,12 @@ func (c *Conn) handleResolve(ctx context.Context, in transport.IncomingMessage) 
 					}
 				})
 			}
-			dq.Defer(func() {
-				imp.resolver.Fulfill(client)
-				client.Release()
-			})
+			//dq.Defer(func() {
+			fmt.Printf("XXX withRemotePeer %v fulfilling resolved client %T\n",
+				c.remotePeerID, imp.resolver)
+			imp.resolver.Fulfill(client)
+			client.Release()
+			//})
 		case rpccp.Resolve_Which_exception:
 			ex, err := resolve.Exception()
 			if err != nil {
@@ -1953,6 +2004,10 @@ func (c *lockedConn) sendMessage(ctx context.Context, build func(rpccp.Message) 
 			return rpcerr.WrapFailed("build message", err)
 		}
 	}
+
+	fmt.Printf("XXX withRemotePeer %v queueing outbound %s\n", c.remotePeerID,
+		outMsg.Message().Which())
+	//	debug.PrintStack()
 
 	oldSend := send
 	send = func() error {

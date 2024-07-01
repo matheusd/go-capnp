@@ -66,6 +66,12 @@ func (r *Ref[T]) AddRef() *Ref[T] {
 	return &Ref[T]{cell: r.cell}
 }
 
+// Count returns the current reference count of this ref. This may change at
+// any time.
+func (r *Ref[T]) Count() int32 {
+	return atomic.LoadInt32(&r.cell.refcount)
+}
+
 // Release this reference to the value. If this is the last reference,
 // this calls the release function that was passed to NewRef.
 //

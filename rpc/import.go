@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/internal/str"
@@ -203,6 +204,7 @@ func (ic *importClient) Recv(ctx context.Context, r capnp.Recv) capnp.PipelineCa
 		returnAnswer(r.Returner, ans, finish)
 		return nil
 	default:
+		fmt.Println("XXX gonna spawn returnAnswer")
 		go returnAnswer(r.Returner, ans, finish)
 		return ans
 	}

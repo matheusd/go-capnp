@@ -222,6 +222,7 @@ func TestNullClient(t *testing.T) {
 }
 
 func TestPromisedClient(t *testing.T) {
+	defer time.Sleep(time.Second)
 	a := &dummyHook{brand: Brand{Value: int(111)}}
 	b := &dummyHook{brand: Brand{Value: int(222)}}
 	ca, pa := NewPromisedClient(a)

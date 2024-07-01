@@ -256,16 +256,20 @@ func newPromisedClient(hook ClientHook) (Client, *clientPromise) {
 	if hook == nil {
 		panic("NewPromisedClient(nil)")
 	}
+
+	resolvedCh := make(chan struct{})
 	rs := mutex.New(resolveState{
-		resolved: make(chan struct{}),
+		resolved: resolvedCh,
 	})
+	fmt.Printf("XXX created new resolve state with chan %v\n", resolvedCh)
 	cursor := newClientCursor(clientHook{
 		ClientHook: hook,
 		metadata:   *NewMetadata(),
 		resolution: maybe.New(&rs),
 	})
-	cs := mutex.New(clientState{cursor: cursor})
-	c := Client{client: &client{state: cs}}
+	// cs := mutex.New(clientState{cursor: cursor})
+	// c := Client{client: &client{state: cs}}
+	c := Client{client: &client{state: mutex.New(clientState{cursor: cursor})}}
 	setupLeakReporting(c)
 	return c, &clientPromise{cursor: cursor.Weak()}
 }
@@ -589,7 +593,8 @@ func (cs ClientSnapshot) String() string {
 	if !cs.IsValid() {
 		return "ClientSnapshot{}"
 	}
-	return "ClientSnapshot{" + cs.hook.Value().String() + "}"
+	return "ClientSnapshot{" + cs.hook.Value().String() + " (" +
+		strconv.FormatInt(int64(cs.hook.Count()), 10) + ")}"
 }
 
 func (cs ClientSnapshot) IsValid() bool {
@@ -704,7 +709,7 @@ func (cs *ClientSnapshot) Resolve(ctx context.Context) error {
 }
 
 func resolveClientHook(ctx context.Context, h *rc.Ref[clientHook]) (_ *rc.Ref[clientHook], err error) {
-	for {
+	for { // Why is this a loop? To support chains of promises?
 		var more bool
 		h, more, err = resolve1ClientHook(ctx, h)
 		if !more || err != nil {
@@ -728,17 +733,20 @@ func resolve1ClientHook(ctx context.Context, h *rc.Ref[clientHook]) (_ *rc.Ref[c
 		return s.resolved
 	})
 
+	fmt.Printf("XXX gonna wait for ch %v resolve\n", resolvedCh)
+
 	select {
 	case <-resolvedCh:
 		rh := mutex.With1(r, func(r *resolveState) *rc.Ref[clientHook] {
 			return r.resolvedHook
 		})
+		fmt.Printf("XXX ch %v resolved (rh == nil? %v)\n", resolvedCh, rh == nil)
 		if rh == nil {
 			return nil, false, nil
 		}
 		return rh.AddRef(), true, nil
 	case <-ctx.Done():
-		return h.AddRef(), true, ctx.Err()
+		return h.AddRef(), true, ctx.Err() // Really, should return false here.
 	}
 }
 
@@ -902,6 +910,7 @@ func (cp *clientPromise) fulfill(dq *deferred.Queue, c Client) {
 				panic("ClientPromise.Fulfill called more than once")
 			}
 			s.resolvedHook = rh
+			fmt.Printf("XXX gonna resolve chan %v\n", s.resolved)
 			close(s.resolved)
 		})
 	})
