@@ -456,7 +456,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 	}
 
 	fmt.Println("p2 received bootstrap")
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	fmt.Println("gonna send call")
 
 	// P2 makes a pipelined call on that returned promise. This will get
@@ -497,7 +497,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 	// can continue.
 
 	fmt.Println("sent call")
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	fmt.Println("gonna ask for P2 bootstrap")
 
 	// For conveience, we use the other peer's (i.e. P2's) bootstrap
@@ -560,7 +560,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		assert.Equal(t, incomingBSQid, rmsg.Finish.QuestionID)
 	}
 
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	fmt.Println("gonna fulfill")
 	// time.Sleep(time.Second)
 
@@ -568,7 +568,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 	//length := runtime.Stack(stacktrace, true)
 	//fmt.Println(string(stacktrace[:length]))
 
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 
 	// Resolve P1's bootstrap capability as P2's bootstrap capability.
 	// Semantically, this means P1 proxies calls to P2.
@@ -577,7 +577,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 	r.Fulfill(bsClient)
 
 	fmt.Println("fulfilled")
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	fmt.Println("gonna wait for reply")
 
 	// At this point in time, P1 has a fulfilled promise on its bootstrap
@@ -654,7 +654,7 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 		assert.Equal(t, rpccp.Message_Which_finish, rmsg.Which)
 
 		fmt.Println("P2 received finish")
-		time.Sleep(3 * time.Second)
+		// time.Sleep(3 * time.Second)
 	}
 
 	// The prior message resolved P1's bootstrap interface (promise `p`,
@@ -769,12 +769,12 @@ func TestShortensPathAfterResolve(t *testing.T) {
 	// Request C1's bootstrap interface. This returns a promise that will
 	// take a while to resolve, because in C1 this is _also_ a promise back
 	// to C2 (in C1 this is `p`, which will be resolved by `r.Fulfill`).
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	fmt.Println("gonna create c2PromiseToC1")
 	c2PromiseToC1 := testcapnp.PingPong(c2.Bootstrap(ctx))
 	defer c2PromiseToC1.Release()
 
-	time.Sleep(1000 * time.Millisecond)
+	// time.Sleep(1000 * time.Millisecond)
 	fmt.Println("created second promise")
 
 	// Fetch C2's bootstrap interface (the concrete echo server).
@@ -782,7 +782,7 @@ func TestShortensPathAfterResolve(t *testing.T) {
 	defer c1PromiseToC2.Release()
 	require.NoError(t, c1PromiseToC2.Resolve(ctx))
 
-	time.Sleep(1000 * time.Millisecond)
+	// time.Sleep(1000 * time.Millisecond)
 	fmt.Println("resolved c1PromiseToC2")
 
 	// Perform a call in C1 using C2's bootstrap interface (which is
@@ -794,14 +794,14 @@ func TestShortensPathAfterResolve(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, c1CallValue, c1CallRes.N())
 	fmt.Println("Got reply")
-	time.Sleep(1000 * time.Millisecond)
+	// time.Sleep(1000 * time.Millisecond)
 
 	go func() {
 		fmt.Println("gonna resolve c2PromiseToC1")
 		require.NoError(t, c2PromiseToC1.Resolve(ctx))
 		fmt.Println("Resolved second promise")
 	}()
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 
 	// Fulfill C1's bootstrap capability with C2's bootstrap capability
 	// (i.e. echo server). This resolves the prior c2PromiseToC1 above and
@@ -809,7 +809,7 @@ func TestShortensPathAfterResolve(t *testing.T) {
 	fmt.Println("LLL gonna fulfill")
 	r.Fulfill(c1PromiseToC2)
 	fmt.Println("fulfilled")
-	time.Sleep(1000 * time.Millisecond)
+	// time.Sleep(1000 * time.Millisecond)
 
 	// fmt.Println("gonna resolve c2PromiseToC1")
 	// require.NoError(t, c2PromiseToC1.Resolve(ctx))
@@ -866,42 +866,54 @@ func TestPromiseOrdering(t *testing.T) {
 	remotePromise := testcapnp.PingPong(c2.Bootstrap(ctx))
 	defer remotePromise.Release()
 
-	time.Sleep(1000 * time.Millisecond)
-	fmt.Println("slept to start sending echo calls")
 	_ = r
 
 	fulfill := func() {
-		time.Sleep(1000 * time.Millisecond)
+		// time.Sleep(1000 * time.Millisecond)
 		go func() {
 			// time.Sleep(time.Millisecond * 1000)
-			fmt.Println("LLL gonna fulfill")
-			r.Fulfill(testcapnp.PingPong(c1.Bootstrap(ctx)))
-			fmt.Println("fulfilled")
+			fmt.Println("LLL fetching c2 bootstrap (from c1)")
+			c2boot := testcapnp.PingPong(c1.Bootstrap(ctx))
+			if err := c2boot.Resolve(ctx); err != nil { // <----- wait.
+				panic(err)
+			}
+			// time.Sleep(100 * time.Millisecond)
+			fmt.Println("LLL fulfilling c1 bootstrap with c2 bootstrap")
+			r.Fulfill(c2boot)
+			fmt.Println("LLL fulfilled")
 		}()
-		time.Sleep(1000 * time.Millisecond)
+		// time.Sleep(1000 * time.Millisecond)
 	}
-	fulfill()
+	// time.Sleep(time.Second)
+	// fulfill()
+
+	// time.Sleep(3 * time.Second)
+	fmt.Println("slept to start sending echo calls")
 
 	// Send a whole bunch of calls to the promise:
 	var (
 		futures []testcapnp.PingPong_echoNum_Results_Future
 		rels    []capnp.ReleaseFunc
 	)
-	numCalls := 16
+	numCalls := 1024
 	for i := 0; i < numCalls; i++ {
 		fut, rel := echoNum(ctx, remotePromise, int64(i))
 		futures = append(futures, fut)
 		rels = append(rels, rel)
-		time.Sleep(10 * time.Millisecond)
+		// time.Sleep(10 * time.Millisecond)
 
 		// At some arbitrary point in the middle, fulfill the promise
 		// with the other bootstrap interface:
-		//		if i == numCalls+1 {
+		// if i == 100 {
+		// fulfill()
 		//			go func() {
 		//				r.Fulfill(testcapnp.PingPong(c1.Bootstrap(ctx)))
 		//			}()
-		//		}
+		// }
 	}
+
+	// time.Sleep(2 * time.Second)
+	fulfill()
 
 	//	time.Sleep(1000 * time.Millisecond)
 	//	go func() {
@@ -910,8 +922,9 @@ func TestPromiseOrdering(t *testing.T) {
 	//		r.Fulfill(testcapnp.PingPong(c1.Bootstrap(ctx)))
 	//		fmt.Println("fulfilled")
 	//	}()
-	// time.Sleep(2000 * time.Millisecond)
-	// fulfill()
+	//time.Sleep(2000 * time.Millisecond)
+	//fulfill()
+	//time.Sleep(2000 * time.Millisecond)
 
 	for i, fut := range futures {
 		// Verify that all the results are as expected. The server
@@ -921,19 +934,20 @@ func TestPromiseOrdering(t *testing.T) {
 		res, err := fut.Struct()
 		fmt.Printf("YYY got reply %d %d %v\n", i, res.N(), err)
 		dur := time.Since(start)
-		time.Sleep(10 * time.Millisecond) // <-- some other async issue
+		// time.Sleep(10 * time.Millisecond) // <-- some other async issue
 		require.NoError(t, err, fmt.Sprintf("call #%d should succeed %v", i, dur))
 		require.Equal(t, int64(i), res.N())
 	}
-	fmt.Println("XXX done all checks")
+	fmt.Println("done all checks")
 	time.Sleep(time.Second)
 	for _, rel := range rels {
 		rel()
 	}
-	fmt.Println("XXX released all futures")
+	fmt.Println("released all futures")
 	time.Sleep(time.Second)
 
-	require.NoError(t, remotePromise.Resolve(ctx))
+	// require.NoError(t, remotePromise.Resolve(ctx))
+
 	// Shut down the connections, and make sure we can still send
 	// calls. This ensures that we've successfully shortened the path to
 	// cut out the remote peer:

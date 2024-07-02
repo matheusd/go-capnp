@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"capnproto.org/go/capnp/v3"
@@ -137,6 +138,15 @@ func (c *Conn) newReturn() (_ rpccp.Return, sendMsg func(), _ *rc.Releaser, _ er
 	releaser := rc.NewReleaser(2, outMsg.Release)
 
 	return ret, func() {
+		var s string
+		switch ret.Which() {
+		case rpccp.Return_Which_exception:
+			e, err := ret.Exception()
+			s = fmt.Sprintf("%v - %v", e, err)
+		}
+		fmt.Printf("XXX withRemotePeer %v send return id %d %s - %s\n", c.remotePeerID,
+			ret.AnswerId(), ret.Which(), s)
+
 		c.lk.sendTx.Send(asyncSend{
 			send:    outMsg.Send,
 			release: releaser.Decr,
@@ -382,6 +392,9 @@ func (ans *ansent) destroy(dq *deferred.Queue) error {
 	for _, s := range ans.returner.resultsCapTable {
 		dq.Defer(s.Release)
 	}
+	fmt.Printf("XXX withRemotePeer %v deleted answer %d\n", c.remotePeerID,
+		ans.returner.id)
+
 	if !ans.flags.Contains(releaseResultCapsFlag) || len(ans.exportRefs) == 0 {
 		return nil
 

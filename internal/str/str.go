@@ -24,6 +24,13 @@ func UToHex[T Uint](n T) string {
 	return strconv.FormatUint(uint64(n), 16)
 }
 
+func BToS(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 func PtrToHex[T any](p *T) string {
 	return UToHex(uintptr(unsafe.Pointer(p)))
 }

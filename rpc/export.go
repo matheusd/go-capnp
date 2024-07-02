@@ -68,6 +68,9 @@ func (c *lockedConn) releaseExport(dq *deferred.Queue, id exportID, count uint32
 	}
 	switch {
 	case count == ent.wireRefs:
+		fmt.Printf("XXX withRemotePeer %v clearing export %d\n", c.remotePeerID,
+			id)
+
 		defer ent.cancel()
 		snapshot := ent.snapshot
 		c.lk.exports[id] = nil
@@ -171,7 +174,9 @@ func (c *lockedConn) sendCap(d rpccp.CapDescriptor, snapshot capnp.ClientSnapsho
 			c.lk.exports[id] = ee
 		}
 		c.setExportID(metadata, id)
-		fmt.Println("XXX added new export with id", id)
+
+		fmt.Printf("XXX withRemotePeer %v added export with id %d\n",
+			c.remotePeerID, id)
 	}
 	if ee.snapshot.IsPromise() {
 		// Cap is a promise. Let the receiver know and start a new
@@ -203,7 +208,9 @@ func (c *lockedConn) sendSenderPromise(id exportID, d rpccp.CapDescriptor) {
 
 		// XXX bootstrap is waiting here to send the resolve.
 		waitErr := waitRef.Resolve1(ctx)
-		fmt.Println("XXX exported promise fullfilled", id)
+		fmt.Printf("XXX withRemotePeer %v exported promise fulfilled %d\n",
+			c.remotePeerID, id)
+
 		unlockedConn.withLocked(func(c *lockedConn) {
 			if len(c.lk.exports) <= int(id) || c.lk.exports[id] != ee {
 				// Export was removed from the table at some point;

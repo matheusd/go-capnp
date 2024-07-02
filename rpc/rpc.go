@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
+	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
 
 	"capnproto.org/go/capnp/v3"
@@ -282,6 +285,8 @@ func (c *Conn) startBackgroundTasks() {
 		// Do not report or send an abort message.
 		if errors.Is(err, context.Canceled) {
 			err = nil
+		} else if err != nil {
+			err = fmt.Errorf("err in %s: %v", c.remotePeerID, err)
 		}
 
 		c.er.ReportError(err) // ignores nil errors
@@ -327,6 +332,7 @@ func (c *Conn) Bootstrap(ctx context.Context) (bc capnp.Client) {
 		// Should multiple calls to Bootstrap yield different
 		// promises/clients? Or the same one?
 		q := c.newQuestion(capnp.Method{})
+		q.method = "**bootstrap"
 		bc = q.p.Answer().Client().AddRef()
 
 		// FIXME: This works around an issue with path shortening on
@@ -484,7 +490,6 @@ func (c *lockedConn) release(dq *deferred.Queue) {
 	c.liftEmbargoes(dq, embargoes)
 	c.releaseAnswers(dq, answers)
 	c.releaseQuestions(dq, questions)
-
 }
 
 func (c *lockedConn) releaseBootstrap(dq *deferred.Queue) {
@@ -769,6 +774,9 @@ func (c *Conn) handleBootstrap(in transport.IncomingMessage) error {
 			return
 		}
 
+		_, ok := c.lk.answers[ans.returner.id]
+		fmt.Printf("XXX withRemotePeer %v handleBootstrap added answer %d ok %v\n",
+			c.remotePeerID, ans.returner.id, ok)
 		c.lk.answers[ans.returner.id] = &ans
 		if !c.bootstrap.IsValid() {
 			ans.sendException(dq, exc.New(exc.Failed, "", "vat does not expose a public/bootstrap interface"))
@@ -864,12 +872,15 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 		return err
 	}
 
-	fmt.Println("XXX parsed call", p.target.which)
+	fmt.Printf("XXX withRemotePeer %v handling call %d parsed call %s target.PromisedAnswer %d target.importedCap %d\n", c.remotePeerID,
+		id, p.target.which, p.target.promisedAnswer, p.target.importedCap)
 
 	// Create return message.
 	ret, send, retReleaser, err := c.newReturn()
 	if err != nil {
-		fmt.Println("XXX return msg errored", err)
+		fmt.Printf("XXX withRemotePeer %v handling call %d return errored %v\n", c.remotePeerID,
+			id, err)
+
 		err = rpcerr.Annotate(err, "incoming call")
 		syncutil.With(&c.lk, func() {
 			c.lk.answers[id] = errorAnswer(c, id, err)
@@ -893,6 +904,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 	}
 	return withLockedConn1(c, func(c *lockedConn) error {
 		// Track this call in the answers table.
+		hadAnsVal, hadAns := c.lk.answers[id]
 		c.lk.answers[id] = ans
 		if parseErr != nil {
 			fmt.Println("XXX fucking parse err", parseErr)
@@ -904,6 +916,9 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 			})
 			return nil
 		}
+
+		fmt.Printf("XXX withRemotePeer %v handling call %d set answer hadAnsVal %v hadAns %v\n", c.remotePeerID,
+			id, hadAnsVal != nil, hadAns)
 
 		recv := capnp.Recv{
 			Args:        p.args,
@@ -940,7 +955,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 		case rpccp.MessageTarget_Which_promisedAnswer:
 			// Target of the call is a promise (this is a pipelined
 			// call).
-			tgtAns := c.lk.answers[p.target.promisedAnswer]
+			tgtAns, ok := c.lk.answers[p.target.promisedAnswer]
 			if tgtAns == nil || tgtAns.flags.Contains(finishReceived) {
 				ans.returner.ret = rpccp.Return{}
 				ans.sendMsg = nil
@@ -949,15 +964,26 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 					retReleaser.Decr()
 					in.Release()
 				})
+				xxx := maps.Keys(c.lk.answers)
+				slices.Sort(xxx)
+				spew.Dump(xxx)
 				return rpcerr.Failed(errors.New(
 					"incoming call: use of unknown or finished answer ID " +
 						str.Utod(p.target.promisedAnswer) +
-						" for promised answer target",
+						" for promised answer target " +
+						str.BToS(tgtAns == nil) + " id " +
+						str.Utod(id) + " ok? " + str.BToS(ok),
 				))
 			}
+
+			fmt.Printf("XXX withRemotePeer %v handling call %d flags %d ptp %d\n",
+				c.remotePeerID, id, tgtAns.flags, p.target.promisedAnswer)
+
 			if tgtAns.flags.Contains(resultsReady) {
 				// Already completed the promise.
-				fmt.Println("XXX results are ready")
+				fmt.Printf("XXX withRemotePeer %v handling call %d results are ready: %v\n",
+					c.remotePeerID, id, tgtAns.err)
+
 				if tgtAns.err != nil {
 					ans.sendException(dq, tgtAns.err)
 					dq.Defer(in.Release)
@@ -985,7 +1011,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 				}
 				iface := sub.Interface()
 				var tgt capnp.ClientSnapshot
-				fmt.Println("XXX sub.IsValid", sub.IsValid(), "iface.IsValid()", iface.IsValid())
+				// fmt.Println("XXX sub.IsValid", sub.IsValid(), "iface.IsValid()", iface.IsValid())
 				if sub.IsValid() && !iface.IsValid() {
 					tgt = capnp.ErrorClient(rpcerr.Failed(ErrNotACapability)).Snapshot()
 				} else {
@@ -993,7 +1019,7 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 					capTable := tgtAns.returner.resultsCapTable
 					if int(capID) < len(capTable) {
 						tgt = capTable[capID].AddRef()
-						fmt.Println("XXX adding ref to cap table id", capID, tgt)
+						// fmt.Println("XXX adding ref to cap table id", capID, tgt)
 					}
 				}
 
@@ -1004,11 +1030,16 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 				ans.setPipelineCaller(p.method, pcall)
 				dq.Defer(func() {
 					defer tgt.Release()
-					pcall.resolve(tgt.Recv(callCtx, recv))
+					res := tgt.Recv(callCtx, recv)
+					fmt.Printf("XXX withRemotePeer %v handling call %d gonna resolve pCall %T\n",
+						c.remotePeerID, id, res)
+					pcall.resolve(res)
 				})
 			} else {
 				// Results not ready, use pipeline caller.
-				fmt.Println("XXX results are NOT ready")
+				fmt.Printf("XXX withRemotePeer %v handling call %d results are NOT ready\n",
+					c.remotePeerID, id)
+
 				tgtAns.pcalls.Add(1) // will be finished by answer.Return
 				var callCtx context.Context
 				callCtx, ans.cancel = context.WithCancel(c.bgctx)
@@ -1195,6 +1226,9 @@ func (c *Conn) handleReturn(ctx context.Context, in transport.IncomingMessage) e
 		canceled := q.flags.Contains(finished)
 		q.flags |= finished
 		if canceled {
+			fmt.Printf("XXX withRemotePeer %v handleReturn %d was canceled\n", c.remotePeerID,
+				qid)
+
 			// Wait for cancelation task to write the Finish message.  If the
 			// Finish message could not be sent to the remote vat, we can't
 			// reuse the ID.
@@ -1224,8 +1258,8 @@ func (c *Conn) handleReturn(ctx context.Context, in transport.IncomingMessage) e
 			c.er.ReportError(rpcerr.Annotate(pr.err, "incoming return"))
 		}
 
-		fmt.Printf("XXX withRemotePeer %v handleReturn %d parsed return err %v\n", c.remotePeerID,
-			qid, pr.err)
+		fmt.Printf("XXX withRemotePeer %v handleReturn %d method %s parsed return err %v\n", c.remotePeerID,
+			qid, q.method, pr.err)
 
 		if pr.err == nil {
 			// The result of the message contains actual data (not just

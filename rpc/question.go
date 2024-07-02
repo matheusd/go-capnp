@@ -18,6 +18,8 @@ type question struct {
 	p       *capnp.Promise
 	release capnp.ReleaseFunc // written before resolving p
 
+	method string
+
 	// Protected by c.mu:
 
 	flags         questionFlags
@@ -54,6 +56,8 @@ func (c *lockedConn) newQuestion(method capnp.Method) *question {
 		id:            c.lk.questionID.next(),
 		release:       func() {},
 		finishMsgSend: make(chan struct{}),
+
+		method: method.MethodName,
 	}
 	q.p = capnp.NewPromise(method, q, nil) // TODO(someday): customize error message for bootstrap
 	c.setAnswerQuestion(q.p.Answer(), q)

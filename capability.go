@@ -378,7 +378,9 @@ func (c Client) SendCall(ctx context.Context, s Send) (*Answer, ReleaseFunc) {
 	}
 
 	ans, rel := h.Value().Send(ctx, s)
-	fmt.Println("sent", s.Method.MethodName)
+	fmt.Printf("XXX sent %s\n",
+		s.Method.MethodName)
+
 	// FIXME: an earlier version of this code called StartMessage() from
 	// within PlaceArgs -- but that can result in a deadlock, since it means
 	// the client hook is holding a lock while we're waiting on the limiter.
