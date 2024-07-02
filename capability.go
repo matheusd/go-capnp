@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync"
 
@@ -124,6 +125,9 @@ type clientState struct {
 	limiter  flowcontrol.FlowLimiter
 	cursor   *rc.Ref[clientCursor] // never nil
 	released bool
+
+	// extraReleasers are called by Release() if any exist.
+	extraReleasers []func()
 
 	stream struct {
 		err error          // Last error from streaming calls.
@@ -378,8 +382,8 @@ func (c Client) SendCall(ctx context.Context, s Send) (*Answer, ReleaseFunc) {
 	}
 
 	ans, rel := h.Value().Send(ctx, s)
-	fmt.Printf("XXX sent %s\n",
-		s.Method.MethodName)
+	// fmt.Printf("XXX sent %s\n",
+	// s.Method.MethodName)
 
 	// FIXME: an earlier version of this code called StartMessage() from
 	// within PlaceArgs -- but that can result in a deadlock, since it means
@@ -482,6 +486,7 @@ func (c Client) RecvCall(ctx context.Context, r Recv) PipelineCaller {
 		return nil
 	}
 	if h == nil {
+		debug.PrintStack()
 		r.Reject(errors.New("call on null client recvCall"))
 		return nil
 	}
@@ -577,6 +582,21 @@ func (c Client) Snapshot() ClientSnapshot {
 	s := ClientSnapshot{hook: h}
 	setupLeakReporting(s)
 	return s
+}
+
+// AttachReleaser attaches an additional releaser func to be called when c.Release()
+// is called. Returns false if the client has already been released.
+//
+// MUST NOT be called with the client state mutex held.
+func (c Client) AttachReleaser(f func()) (released bool) {
+	c.state.With(func(s *clientState) {
+		if s.released {
+			released = true
+		} else {
+			s.extraReleasers = append(s.extraReleasers, f)
+		}
+	})
+	return
 }
 
 // A Brand is an opaque value used to identify a capability.
@@ -793,6 +813,10 @@ func (c Client) Release() {
 			s.released = true
 			s.cursor.Release()
 			limiter.Release()
+
+			for i := range s.extraReleasers {
+				s.extraReleasers[i]()
+			}
 		}
 	})
 }

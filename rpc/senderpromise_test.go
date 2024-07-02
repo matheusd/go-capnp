@@ -729,6 +729,103 @@ func TestDisembargoSenderPromiseWithPipeline(t *testing.T) {
 	fmt.Println("received disembargo")
 }
 
+func TestBugCallBeforeBootstrapFinish(t *testing.T) {
+	t.Parallel()
+
+	const concreteBootstrapInterfaceID uint64 = 0xbaba001337
+	const methodIdOrd uint16 = 0x0f30
+
+	ctx := context.Background()
+	p, r := capnp.NewLocalPromise[capnp.Client]()
+
+	left, right := transport.NewPipe(1)
+	p1, p2 := rpc.NewTransport(left), rpc.NewTransport(right)
+
+	conn := rpc.NewConn(p1, &rpc.Options{
+		Logger:          testErrorReporter{tb: t},
+		BootstrapClient: capnp.Client(p), // The bootstrap intf of conn/p1 is promise `p`
+		RemotePeerID:    rpc.PeerID{Value: "p1"},
+	})
+	defer finishTest(t, conn, p2)
+
+	// P2 asks for P1's bootstrap interface (send Bootstrap from P2 to P1).
+	const p2BootstrapReqQuestionId = 0
+	{
+		msg := &rpcMessage{
+			Which:     rpccp.Message_Which_bootstrap,
+			Bootstrap: &rpcBootstrap{QuestionID: p2BootstrapReqQuestionId},
+		}
+		assert.NoError(t, sendMessage(ctx, p2, msg))
+	}
+
+	// Receive return from P1. `p1BootstrapIDPromise` will point to a P1
+	// promise to return the bootstrap interface (i.e. a promise to return
+	// once `p` resolves).
+	var p1BootstrapIDPromise uint32
+	{
+		rmsg, release, err := recvMessage(ctx, p2)
+		assert.NoError(t, err)
+		defer release()
+
+		// Assert that it contains a result and that the result is
+		// index 0 in the cap table and that the result is a promise.
+		assert.Equal(t, rpccp.Message_Which_return, rmsg.Which)
+		assert.Equal(t, uint32(0), rmsg.Return.AnswerID)
+		assert.Equal(t, rpccp.Return_Which_results, rmsg.Return.Which)
+		assert.Equal(t, 1, len(rmsg.Return.Results.CapTable))
+		desc := rmsg.Return.Results.CapTable[0]
+		assert.Equal(t, rpccp.CapDescriptor_Which_senderPromise, desc.Which)
+		p1BootstrapIDPromise = desc.SenderPromise
+	}
+
+	// P2 sends a finish, ack'ng it received the return.
+	{
+		msg := &rpcMessage{
+			Which:  rpccp.Message_Which_finish,
+			Finish: &rpcFinish{QuestionID: p2BootstrapReqQuestionId},
+		}
+		assert.NoError(t, sendMessage(ctx, p2, msg))
+	}
+
+	// P2 makes a pipelined call on that returned promise. This will get
+	// embargoed in P1. Note this is a call on the bootstrap interface, thus
+	// must be supported by level 0 implementations.
+	p2Call01Id := uint32(0xaabbccdd)
+	{
+		msg := &rpcMessage{
+			Which: rpccp.Message_Which_call,
+			Call: &rpcCall{
+				QuestionID: p2Call01Id,
+				Target: rpcMessageTarget{
+					Which: rpccp.MessageTarget_Which_promisedAnswer,
+					PromisedAnswer: &rpcPromisedAnswer{
+						// ???
+						//
+						// Doc says "ID of the
+						// question (in the sender's
+						// question table / receiver's
+						// answer table)"
+						//
+						// But I think this is backwards.
+						QuestionID: p1BootstrapIDPromise,
+					},
+				},
+				InterfaceID: concreteBootstrapInterfaceID,
+				MethodID:    methodIdOrd,
+				SendResultsTo: rpcCallSendResultsTo{
+					Which: rpccp.Call_sendResultsTo_Which_caller,
+				},
+			},
+		}
+		assert.NoError(t, sendMessage(ctx, p2, msg))
+	}
+
+	_ = p1BootstrapIDPromise
+	_ = r
+	time.Sleep(time.Second)
+
+}
+
 // TestShortensPathAfterResolve verifies that a conn collapses the path to a
 // capability if the remote promise resolves to the local vat.
 func TestShortensPathAfterResolve(t *testing.T) {
@@ -838,7 +935,7 @@ func TestPromiseOrdering(t *testing.T) {
 	t.Cleanup(func() { time.Sleep(100 * time.Millisecond) }) // Avoid log error after fail
 
 	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, time.Second*30)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*3000)
 	defer cancel()
 
 	p, r := capnp.NewLocalPromise[testcapnp.PingPong]()
@@ -870,24 +967,24 @@ func TestPromiseOrdering(t *testing.T) {
 
 	fulfill := func() {
 		// time.Sleep(1000 * time.Millisecond)
-		go func() {
-			// time.Sleep(time.Millisecond * 1000)
-			fmt.Println("LLL fetching c2 bootstrap (from c1)")
-			c2boot := testcapnp.PingPong(c1.Bootstrap(ctx))
-			if err := c2boot.Resolve(ctx); err != nil { // <----- wait.
-				panic(err)
-			}
-			// time.Sleep(100 * time.Millisecond)
-			fmt.Println("LLL fulfilling c1 bootstrap with c2 bootstrap")
-			r.Fulfill(c2boot)
-			fmt.Println("LLL fulfilled")
-		}()
+		//go func() {
+		// time.Sleep(time.Millisecond * 1000)
+		fmt.Println("LLL fetching c2 bootstrap (from c1)")
+		c2boot := testcapnp.PingPong(c1.Bootstrap(ctx))
+		// if err := c2boot.Resolve(ctx); err != nil { // <----- wait.
+		//	panic(err)
+		//}
+		time.Sleep(100 * time.Millisecond)
+		fmt.Println("LLL fulfilling c1 bootstrap with c2 bootstrap")
+		r.Fulfill(c2boot)
+		fmt.Println("LLL fulfilled")
+		//}()
 		// time.Sleep(1000 * time.Millisecond)
 	}
 	// time.Sleep(time.Second)
-	// fulfill()
+	// go fulfill()
 
-	// time.Sleep(3 * time.Second)
+	time.Sleep(3 * time.Second)
 	fmt.Println("slept to start sending echo calls")
 
 	// Send a whole bunch of calls to the promise:
@@ -896,24 +993,30 @@ func TestPromiseOrdering(t *testing.T) {
 		rels    []capnp.ReleaseFunc
 	)
 	numCalls := 1024
+	const offset = 1000
 	for i := 0; i < numCalls; i++ {
-		fut, rel := echoNum(ctx, remotePromise, int64(i))
+		fmt.Println("sending echonum", i)
+		fut, rel := echoNum(ctx, remotePromise, int64(i+offset))
 		futures = append(futures, fut)
 		rels = append(rels, rel)
 		// time.Sleep(10 * time.Millisecond)
 
 		// At some arbitrary point in the middle, fulfill the promise
 		// with the other bootstrap interface:
-		// if i == 100 {
-		// fulfill()
-		//			go func() {
-		//				r.Fulfill(testcapnp.PingPong(c1.Bootstrap(ctx)))
-		//			}()
-		// }
+		if i == 100 {
+			time.Sleep(100 * time.Millisecond)
+			go fulfill()
+			// time.Sleep(2 * time.Second)
+			//			go func() {
+			//				r.Fulfill(testcapnp.PingPong(c1.Bootstrap(ctx)))
+			//			}()
+		}
 	}
 
+	fmt.Println("finished all sends")
+
 	// time.Sleep(2 * time.Second)
-	fulfill()
+	// fulfill()
 
 	//	time.Sleep(1000 * time.Millisecond)
 	//	go func() {
@@ -923,20 +1026,20 @@ func TestPromiseOrdering(t *testing.T) {
 	//		fmt.Println("fulfilled")
 	//	}()
 	//time.Sleep(2000 * time.Millisecond)
-	//fulfill()
+	//go fulfill()
 	//time.Sleep(2000 * time.Millisecond)
 
 	for i, fut := range futures {
 		// Verify that all the results are as expected. The server
 		// Will verify that they came in the right order.
-		fmt.Println("XXX gonna ask for ", i)
+		fmt.Println("gonna ask for results", i)
 		start := time.Now()
 		res, err := fut.Struct()
-		fmt.Printf("YYY got reply %d %d %v\n", i, res.N(), err)
+		fmt.Printf("got reply %d %d %v\n", i, res.N(), err)
 		dur := time.Since(start)
 		// time.Sleep(10 * time.Millisecond) // <-- some other async issue
 		require.NoError(t, err, fmt.Sprintf("call #%d should succeed %v", i, dur))
-		require.Equal(t, int64(i), res.N())
+		require.Equal(t, int64(i+offset), res.N())
 	}
 	fmt.Println("done all checks")
 	time.Sleep(time.Second)

@@ -594,8 +594,6 @@ func (c *Conn) receive(ctx context.Context) func() error {
 		incoming := make(chan incomingMessage)
 		go c.reader(ctx, incoming)
 
-		var finCount int
-
 		var in transport.IncomingMessage
 		for {
 			select {
@@ -641,12 +639,6 @@ func (c *Conn) receive(ctx context.Context) func() error {
 			case rpccp.Message_Which_finish:
 				if err := c.handleFinish(ctx, in); err != nil {
 					return fmt.Errorf("handle Finish: %w", err)
-				}
-
-				if finCount == 0 {
-					// time.Sleep(4000 * time.Millisecond)
-					fmt.Printf("%v slept after first finish()\n", c.remotePeerID)
-					finCount++
 				}
 
 			case rpccp.Message_Which_release:
@@ -947,8 +939,14 @@ func (c *Conn) handleCall(ctx context.Context, in transport.IncomingMessage) err
 			pcall := newPromisedPipelineCaller()
 			ans.setPipelineCaller(p.method, pcall)
 			// fmt.Println("XXX ans table has ans", spew.Sdump(ans))
+
+			fmt.Printf("XXX withRemotePeer %v handling call %d found export %d\n", c.remotePeerID,
+				id, p.target.importedCap)
+
 			dq.Defer(func() {
 				res := ent.snapshot.Recv(callCtx, recv)
+				fmt.Printf("XXX withRemotePeer %v handling call %d nil res %v\n", c.remotePeerID,
+					id, res == nil)
 				pcall.resolve(res)
 			})
 			return nil

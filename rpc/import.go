@@ -86,6 +86,10 @@ func (c *lockedConn) addImport(id importID, isPromise bool) capnp.Client {
 	} else {
 		client = capnp.NewClient(hook)
 	}
+
+	fmt.Printf("XXX withRemotePeer %v adding import %d isPromise %v\n",
+		c.remotePeerID, id, isPromise)
+
 	c.lk.imports[id] = &impent{
 		wc:       client.WeakRef(),
 		wireRefs: 1,
@@ -116,6 +120,9 @@ func (ic *importClient) Send(ctx context.Context, s capnp.Send) (*capnp.Answer, 
 			return capnp.ErrorAnswer(s.Method, rpcerr.Disconnected(errors.New("send on closed import"))), func() {}
 		}
 		q := c.newQuestion(s.Method)
+
+		fmt.Printf("XXX withRemotePeer %v sending call %q qid %d to import %d\n",
+			c.remotePeerID, s.Method.MethodName, q.id, ic.id)
 
 		// Send call message.
 		c.sendMessage(ctx, func(m rpccp.Message) error {

@@ -16,25 +16,36 @@ func NewLocalPromise[C ~ClientKind]() (C, Resolver[C]) {
 	aq := NewAnswerQueue(Method{})
 	f := NewPromise(Method{}, aq, aq)
 	p := f.Answer().Client().AddRef()
-	return C(p), localResolver[C]{
+	c := C(p)
+	r := localResolver[C]{
 		p: f,
+		c: c,
 	}
+	Client(c).AttachReleaser(f.ReleaseClients)
+	return c, r
 }
 
 type localResolver[C ~ClientKind] struct {
 	p *Promise
+	c C
 }
 
 func (lf localResolver[C]) Fulfill(c C) {
 	msg, seg := NewSingleSegmentMessage(nil)
+	Client(lf.c).AttachReleaser(msg.Release)
 	capID := msg.CapTable().Add(Client(c))
 	iface := NewInterface(seg, capID)
 	lf.p.Fulfill(iface.ToPtr())
-	lf.p.ReleaseClients()
-	msg.Release()
+	/*
+		go func() {
+			time.Sleep(time.Second * 10)
+			lf.p.ReleaseClients()
+			msg.Release()
+		}()
+	*/
 }
 
 func (lf localResolver[C]) Reject(err error) {
 	lf.p.Reject(err)
-	lf.p.ReleaseClients()
+	// lf.p.ReleaseClients()
 }

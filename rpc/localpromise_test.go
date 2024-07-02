@@ -27,6 +27,7 @@ func (e *echoNumOrderChecker) EchoNum(ctx context.Context, p testcapnp.PingPong_
 	}
 	results.SetN(p.Args().N())
 	fmt.Printf("XXX Server replying with %d %d\n", n, results.N())
+	// debug.PrintStack()
 	return nil
 }
 

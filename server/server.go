@@ -4,6 +4,7 @@ package server // import "capnproto.org/go/capnp/v3/server"
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -134,6 +135,8 @@ func (srv *Server) Send(ctx context.Context, s capnp.Send) (*capnp.Answer, capnp
 		return capnp.ErrorAnswer(mm.Method, err), func() {}
 	}
 	ret := new(capnp.StructReturner)
+
+	fmt.Println("XXX starting server.Send()")
 	pcaller := srv.start(ctx, mm, capnp.Recv{
 		Method: mm.Method, // pick up names from server method
 		Args:   args,
@@ -158,6 +161,7 @@ func (srv *Server) Recv(ctx context.Context, r capnp.Recv) capnp.PipelineCaller 
 		r.Reject(capnp.Unimplemented("unimplemented"))
 		return nil
 	}
+	fmt.Println("XXX starting server.Recv()")
 	return srv.start(ctx, mm, r)
 }
 

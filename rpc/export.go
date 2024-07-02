@@ -175,8 +175,8 @@ func (c *lockedConn) sendCap(d rpccp.CapDescriptor, snapshot capnp.ClientSnapsho
 		}
 		c.setExportID(metadata, id)
 
-		fmt.Printf("XXX withRemotePeer %v added export with id %d\n",
-			c.remotePeerID, id)
+		fmt.Printf("XXX withRemotePeer %v added export with id %d isPromise %v\n",
+			c.remotePeerID, id, ee.snapshot.IsPromise())
 	}
 	if ee.snapshot.IsPromise() {
 		// Cap is a promise. Let the receiver know and start a new
