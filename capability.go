@@ -381,9 +381,10 @@ func (c Client) SendCall(ctx context.Context, s Send) (*Answer, ReleaseFunc) {
 		return err
 	}
 
-	ans, rel := h.Value().Send(ctx, s)
-	// fmt.Printf("XXX sent %s\n",
-	// s.Method.MethodName)
+	val := h.Value()
+	cs := (*clientHook)(val)
+	fmt.Printf("XXX sending %s %s %s\n", s.Method.MethodName, cs, cs.Brand())
+	ans, rel := val.Send(ctx, s)
 
 	// FIXME: an earlier version of this code called StartMessage() from
 	// within PlaceArgs -- but that can result in a deadlock, since it means

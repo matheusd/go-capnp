@@ -1335,6 +1335,9 @@ func (c *Conn) handleReturn(ctx context.Context, in transport.IncomingMessage) e
 				}
 
 				// Send finish.
+				fmt.Printf("XXX withRemotePeer %v handleReturn %d sending finish\n", c.remotePeerID,
+					qid)
+
 				c.sendMessage(ctx, func(m rpccp.Message) error {
 					fin, err := m.NewFinish()
 					if err == nil {
@@ -1491,9 +1494,13 @@ func (c *lockedConn) recvCap(d rpccp.CapDescriptor) (capnp.Client, error) {
 		return capnp.Client{}, nil
 	case rpccp.CapDescriptor_Which_senderHosted:
 		id := importID(d.SenderHosted())
+		fmt.Printf("XXX withRemotePeer %v recvCap adding import senderHosted %d\n",
+			c.remotePeerID, id)
 		return c.addImport(id, false), nil
 	case rpccp.CapDescriptor_Which_senderPromise:
 		id := importID(d.SenderPromise())
+		fmt.Printf("XXX withRemotePeer %v recvCap adding import senderPromise %d\n",
+			c.remotePeerID, id)
 		return c.addImport(id, true), nil
 	case rpccp.CapDescriptor_Which_thirdPartyHosted:
 		if c.network == nil {
@@ -1519,6 +1526,9 @@ func (c *lockedConn) recvCap(d rpccp.CapDescriptor) (capnp.Client, error) {
 				"receive capability: invalid export " + str.Utod(id),
 			))
 		}
+		fmt.Printf("XXX withRemotePeer %v recvCap receiverHost %d\n",
+			c.remotePeerID, id)
+
 		return ent.snapshot.Client(), nil
 	case rpccp.CapDescriptor_Which_receiverAnswer:
 		promisedAnswer, err := d.ReceiverAnswer()
@@ -1541,6 +1551,8 @@ func (c *lockedConn) recvCap(d rpccp.CapDescriptor) (capnp.Client, error) {
 				"receive capability: no such question id: " + str.Utod(id),
 			))
 		}
+		fmt.Printf("XXX withRemotePeer %v recvCap receiverAnswer %d\n",
+			c.remotePeerID, id)
 
 		return c.recvCapReceiverAnswer(ans, transform), nil
 	default:

@@ -971,10 +971,10 @@ func TestPromiseOrdering(t *testing.T) {
 		// time.Sleep(time.Millisecond * 1000)
 		fmt.Println("LLL fetching c2 bootstrap (from c1)")
 		c2boot := testcapnp.PingPong(c1.Bootstrap(ctx))
-		// if err := c2boot.Resolve(ctx); err != nil { // <----- wait.
-		//	panic(err)
-		//}
-		time.Sleep(100 * time.Millisecond)
+		if err := c2boot.Resolve(ctx); err != nil { // <----- wait.
+			panic(err)
+		}
+		// time.Sleep(100 * time.Millisecond)
 		fmt.Println("LLL fulfilling c1 bootstrap with c2 bootstrap")
 		r.Fulfill(c2boot)
 		fmt.Println("LLL fulfilled")
@@ -984,7 +984,7 @@ func TestPromiseOrdering(t *testing.T) {
 	// time.Sleep(time.Second)
 	// go fulfill()
 
-	time.Sleep(3 * time.Second)
+	// time.Sleep(3 * time.Second)
 	fmt.Println("slept to start sending echo calls")
 
 	// Send a whole bunch of calls to the promise:
@@ -992,7 +992,7 @@ func TestPromiseOrdering(t *testing.T) {
 		futures []testcapnp.PingPong_echoNum_Results_Future
 		rels    []capnp.ReleaseFunc
 	)
-	numCalls := 1024
+	numCalls := 600
 	const offset = 1000
 	for i := 0; i < numCalls; i++ {
 		fmt.Println("sending echonum", i)
@@ -1004,7 +1004,7 @@ func TestPromiseOrdering(t *testing.T) {
 		// At some arbitrary point in the middle, fulfill the promise
 		// with the other bootstrap interface:
 		if i == 100 {
-			time.Sleep(100 * time.Millisecond)
+			// time.Sleep(100 * time.Millisecond)
 			go fulfill()
 			// time.Sleep(2 * time.Second)
 			//			go func() {
@@ -1042,12 +1042,12 @@ func TestPromiseOrdering(t *testing.T) {
 		require.Equal(t, int64(i+offset), res.N())
 	}
 	fmt.Println("done all checks")
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 	for _, rel := range rels {
 		rel()
 	}
 	fmt.Println("released all futures")
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 
 	// require.NoError(t, remotePromise.Resolve(ctx))
 

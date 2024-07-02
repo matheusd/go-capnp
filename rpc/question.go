@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 
 	"capnproto.org/go/capnp/v3"
 	"capnproto.org/go/capnp/v3/internal/syncutil"
@@ -232,6 +233,9 @@ func (c *lockedConn) newPipelineCallMessage(msg rpccp.Message, tgt questionID, t
 	if err != nil {
 		return rpcerr.Annotate(err, "build call message")
 	}
+
+	fmt.Printf("XXX withRemotePeer %v question.newCallMsg qid %d tgt %d method %q\n",
+		c.remotePeerID, qid, tgt, s.Method.MethodName)
 
 	return err
 }
