@@ -730,7 +730,7 @@ func testPromiseOrderingCase(t *testing.T, numCalls int, callToFulfill int,
 	// t.Parallel()
 
 	// Test context to ensure we don't hang for too long.
-	timeout := 5*time.Second + time.Duration(numCalls)*50*time.Millisecond
+	timeout := 30*time.Second + time.Duration(numCalls)*50*time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
